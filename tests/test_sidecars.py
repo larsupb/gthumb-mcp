@@ -84,6 +84,63 @@ def test_read_categories_missing_sidecar(gthumb_home):
     assert sidecars.read_sidecar(img) is None
 
 
+def test_update_sidecar_rating(gthumb_home):
+    img = make_image(gthumb_home["data"] / "img" / "r.png")
+    state = sidecars.update_sidecar(img, rating=4)
+
+    assert state["rating"] == 4
+    root = ET.parse(sidecars.sidecar_path(img)).getroot()
+    rating = root.find("rating")
+    assert rating is not None
+    assert rating.get("value") == "4"
+    # gThumb only writes <rating> when > 0.
+    assert sidecars.update_sidecar(img, rating=0)["rating"] == 0
+    assert ET.parse(sidecars.sidecar_path(img)).getroot().find("rating") is None
+
+
+def test_update_sidecar_partial_fields_preserved(gthumb_home):
+    img = make_image(gthumb_home["data"] / "img" / "s.png")
+    sidecars.update_sidecar(img, caption="Title", note="Body", rating=3, tags=["Keep"])
+
+    sidecars.update_sidecar(img, caption="New title")  # only caption changes
+    state = sidecars.read_sidecar(img)
+    assert state["caption"] == "New title"
+    assert state["note"] == "Body"
+    assert state["rating"] == 3
+    assert state["categories"] == ["Keep"]
+
+
+def test_set_rating_writes_sidecar_and_xmp(gthumb_home):
+    img = make_image(gthumb_home["data"] / "img" / "t.jpg")
+    server.set_rating(str(img), 5)
+
+    assert sidecars.read_sidecar(img)["rating"] == 5
+    assert metadata.get_image_info(img)["rating"] == 5
+
+
+def test_set_comment_writes_sidecar_fields(gthumb_home):
+    img = make_image(gthumb_home["data"] / "img" / "u.png")
+    server.set_tags(str(img), ["Keep"], replace=True)
+    server.set_comment(str(img), title="A title", description="A description", location="A place")
+
+    sidecar = sidecars.read_sidecar(img)
+    assert sidecar["caption"] == "A title"
+    assert sidecar["note"] == "A description"
+    assert sidecar["place"] == "A place"
+    assert sidecar["categories"] == ["Keep"]  # untouched by set_comment
+
+
+def test_get_image_info_fills_missing_fields_from_sidecar(gthumb_home):
+    img = make_image(gthumb_home["data"] / "img" / "v.png")
+    sidecars.update_sidecar(img, caption="Sidecar title", note="Sidecar note", rating=4, tags=["T"])
+
+    info = json.loads(server.get_image_info(str(img)))
+    assert info["title"] == "Sidecar title"
+    assert info["description"] == "Sidecar note"
+    assert info["rating"] == 4
+    assert info["tags"] == ["T"]
+
+
 def test_set_tags_writes_sidecar_and_tags_xml(gthumb_home):
     img = make_image(gthumb_home["data"] / "img" / "e.jpg")
     res = json.loads(server.set_tags(str(img), ["Selfie"], replace=True))

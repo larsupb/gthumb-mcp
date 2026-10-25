@@ -92,9 +92,9 @@ Claude Desktop (`claude_desktop_config.json`):
 | Tool | Description |
 |---|---|
 | `get_image_info(path)` | Dimensions, format, camera, date, GPS, title, description, tags, rating |
-| `set_rating(path, 0..5)` | Star rating |
+| `set_rating(path, 0..5)` | Star rating — embedded XMP + comment sidecar |
 | `set_tags(path, tags, replace)` | Set (`replace=true`) or append (`replace=false`) tags — written to the comment sidecar *and* embedded XMP |
-| `set_comment(path, title?, description?, location?)` | Only non-`None` fields are changed |
+| `set_comment(path, title?, description?, location?)` | Title/comment/location — written to both the comment sidecar and embedded XMP; only non-`None` fields change |
 
 **Search & view**
 
@@ -164,19 +164,19 @@ JSON is always delivered regardless.
 
 - **Catalogs** are parsed and rewritten as XML in exactly gThumb's format. All writes
   are atomic (temp file + `os.replace`), so a crash can't corrupt gThumb's files.
-- **Tags on images** are read/written as embedded XMP via exiftool *and* as
-  gThumb comment sidecars (`<folder>/.comments/<image>.xml`). Which store the
-  gThumb UI uses depends on the build: exiv2-linked builds read embedded XMP,
-  while Debian's gThumb 3.12 package has no exiv2 linkage and uses sidecars
-  exclusively (regardless of the store-metadata-in-files setting) — so both
-  are kept in sync:
+- **Tags, titles, comments and ratings** are read/written as embedded XMP via
+  exiftool *and* as gThumb comment sidecars (`<folder>/.comments/<image>.xml`).
+  Which store the gThumb UI uses depends on the build: exiv2-linked builds read
+  embedded XMP, while Debian's gThumb 3.12 package has no exiv2 linkage and
+  uses sidecars exclusively (regardless of the store-metadata-in-files
+  setting) — so both are kept in sync:
 
   | gThumb field | XMP field | Sidecar element |
   |---|---|---|
   | Title | `XMP-dc:Title` | `<caption>` |
   | Description / comment | `XMP-dc:Description` | `<note>` |
   | Tags | `XMP-dc:Subject` (list) | `<categories><category value=…/>` |
-  | Rating | `XMP-xmp:Rating` (integer 0–5) | — (XMP only) |
+  | Rating | `XMP-xmp:Rating` (integer 0–5) | `<rating value="N"/>` |
 
   Tag searches and `get_image_info` read both stores and merge results.
   Note the exiftool list semantics used here: plain `=` assignments *replace* the

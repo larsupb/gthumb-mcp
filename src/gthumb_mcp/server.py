@@ -179,9 +179,20 @@ def get_image_info(path: str) -> str:
     """Get image details: dimensions, format, camera, date, GPS, and gThumb metadata (title, description, tags, rating)."""
     p = _existing_file(path)
     info = metadata.get_image_info(p)
-    # Merge sidecar categories: depending on the gThumb build, tags live in
-    # embedded XMP, .comments sidecars, or both.
-    info["tags"] = list(dict.fromkeys(list(info.get("tags") or []) + sidecars.read_categories(p)))
+    # Merge sidecar data: depending on the gThumb build, tags and comments
+    # live in embedded XMP, .comments sidecars, or both. Sidecar values fill
+    # in whatever the embedded XMP is missing.
+    sidecar = sidecars.read_sidecar(p)
+    if sidecar:
+        for key, sidecar_key in (("title", "caption"), ("description", "note"),
+                                 ("location", "place")):
+            if info.get(key) in (None, "") and sidecar[sidecar_key]:
+                info[key] = sidecar[sidecar_key]
+        if info.get("rating") in (None, 0) and sidecar["rating"]:
+            info["rating"] = sidecar["rating"]
+        info["tags"] = list(dict.fromkeys(
+            list(info.get("tags") or []) + sidecar["categories"]
+        ))
     info["path"] = str(p)
     info["has_comfyui_workflow"] = comfyui.has_workflow(p)
     return _ok(info)
@@ -189,9 +200,11 @@ def get_image_info(path: str) -> str:
 
 @mcp.tool()
 def set_rating(path: str, rating: int) -> str:
-    """Set the gThumb star rating (0-5) of an image, stored as embedded XMP. This modifies the file."""
+    """Set the gThumb star rating (0-5) of an image: embedded XMP (exiftool)
+    and the comment sidecar the gThumb UI reads. This modifies the file."""
     p = _existing_file(path)
     applied = metadata.set_rating(p, rating)
+    sidecars.update_sidecar(p, rating=applied)
     return _ok({"path": str(p), "rating": applied})
 
 
@@ -223,9 +236,12 @@ def set_tags(path: str, tags: list[str], replace: bool = True) -> str:
 @mcp.tool()
 def set_comment(path: str, title: str | None = None, description: str | None = None,
                 location: str | None = None) -> str:
-    """Set an image's title, description (comment) and/or location in gThumb-compatible embedded XMP. Only non-None fields are changed."""
+    """Set an image's title, description (comment) and/or location: written as
+    embedded XMP (exiftool) and to the comment sidecar the gThumb UI reads
+    (sidecar caption/note/place). Only non-None fields are changed."""
     p = _existing_file(path)
     metadata.set_comment(p, title=title, description=description, location=location)
+    sidecars.update_sidecar(p, caption=title, note=description, place=location)
     return _ok({"path": str(p), "title": title, "description": description, "location": location})
 
 
