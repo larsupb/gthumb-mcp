@@ -134,8 +134,11 @@ generated:
 `get_image_info` includes a `has_comfyui_workflow` flag for cheap availability
 checks. JPEGs saved by ComfyUI (workflow embedded in the EXIF UserComment)
 are supported as a fallback. Prompt extraction is best-effort — third-party
-node collections wire samplers differently, and the complete graph JSON is
-always delivered regardless.
+node collections wire samplers differently. When the sampler's prompt links
+cannot be resolved (e.g. rgthree "Anything Everywhere" / "Prompts Everywhere"
+wiring), the summary falls back to the first two text-encoding nodes by node
+id and, when present, to the API-format `prompt` chunk. The complete graph
+JSON is always delivered regardless.
 
 ## Example session
 

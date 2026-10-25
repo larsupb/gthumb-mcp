@@ -112,35 +112,40 @@ def _summarize_ui(graph: dict) -> dict:
                 if value not in models:
                     models.append(value)
     positive = negative = None
-    try:
-        by_id = {str(node.get("id")): node for node in nodes}
-        sampler = next(n for n in nodes if "KSampler" in str(n.get("type", "")))
+    sampler = next((n for n in nodes if "KSampler" in str(n.get("type", ""))), None)
 
-        # Preferred: follow the positive/negative input links to the source node.
+    # Strategy 1: follow the positive/negative input links from the sampler.
+    if sampler is not None:
         named_inputs = {i.get("name"): i for i in (sampler.get("inputs") or [])}
-        if "positive" in named_inputs or "negative" in named_inputs:
+        if "positive" in named_inputs and positive is None:
             positive = _resolve_ui_prompt(graph, sampler, "positive")
+        if "negative" in named_inputs and negative is None:
             negative = _resolve_ui_prompt(graph, sampler, "negative")
 
-        # Fallback: older ComfyUI writes positive/negative node ids as the last
-        # two widget values of the sampler.
-        if positive is None and negative is None:
+    # Strategy 2: older ComfyUI writes positive/negative node ids as the last
+    # two widget values of the sampler.
+    if (positive is None or negative is None) and sampler is not None:
+        try:
             widget_ids = [v for v in (sampler.get("widgets_values") or [])
                           if isinstance(v, (int, str))]
-            pos_node = by_id.get(str(widget_ids[-2])) or {}
-            neg_node = by_id.get(str(widget_ids[-1])) or {}
-            pos_vals = pos_node.get("widgets_values") or []
-            neg_vals = neg_node.get("widgets_values") or []
-            positive = pos_vals[0] if pos_vals else None
-            negative = neg_vals[0] if neg_vals else None
+            if len(widget_ids) >= 2:
+                by_id = {str(node.get("id")): node for node in nodes}
+                pos_vals = (by_id.get(str(widget_ids[-2])) or {}).get("widgets_values") or []
+                neg_vals = (by_id.get(str(widget_ids[-1])) or {}).get("widgets_values") or []
+                if positive is None and pos_vals and isinstance(pos_vals[0], str) and len(pos_vals[0]) > 1:
+                    positive = pos_vals[0]
+                if negative is None and neg_vals and isinstance(neg_vals[0], str) and len(neg_vals[0]) > 1:
+                    negative = neg_vals[0]
+        except Exception:  # noqa: BLE001 - each strategy is best-effort
+            pass
 
-        # Last resort: the first text-encoding nodes.
-        if positive is None:
-            positive = _first_text_widget(nodes)
-        if negative is None:
-            negative = _first_text_widget(nodes, skip=positive)
-    except (StopIteration, IndexError, TypeError):
-        pass
+    # Strategy 3 (last resort; covers rgthree "Anything Everywhere" wiring,
+    # where samplers carry no resolvable prompt links): the first two text-
+    # encoding nodes, in graph order.
+    if positive is None:
+        positive = _first_text_widget(nodes)
+    if negative is None:
+        negative = _first_text_widget(nodes, skip=positive)
     return {"node_count": len(nodes), "models": models,
             "positive_prompt": positive, "negative_prompt": negative}
 
@@ -161,13 +166,21 @@ def _resolve_ui_prompt(graph: dict, sampler: dict, link_name: str):
 
 
 def _first_text_widget(nodes, skip=None):
-    """First text-looking widget among text-encoding nodes."""
-    for node in nodes:
-        if "CLIPTextEncode" in str(node.get("type", "")):
-            vals = [v for v in (node.get("widgets_values") or []) if isinstance(v, str)]
-            for v in vals:
-                if v != skip and len(v) > 1:
-                    return v
+    """First text-looking widget among text-encoding nodes, in node-id order.
+
+    ComfyUI convention is that the positive prompt node is created before the
+    negative one, so sorting by node id gives positive-then-negative even when
+    the node array lists them the other way around.
+    """
+    encoders = sorted(
+        (n for n in nodes if "CLIPTextEncode" in str(n.get("type", ""))),
+        key=lambda n: _node_id_sort((str(n.get("id")), n)),
+    )
+    for node in encoders:
+        vals = [v for v in (node.get("widgets_values") or []) if isinstance(v, str)]
+        for v in vals:
+            if v != skip and len(v) > 1:
+                return v
     return None
 
 
@@ -179,17 +192,45 @@ def _summarize_api(graph: dict) -> dict:
                 if value not in models:
                     models.append(value)
     positive = negative = None
-    try:
-        sampler = next(n for n in graph.values() if "KSampler" in str(n.get("class_type", "")))
-        pos_ref, neg_ref = sampler["inputs"]["positive"], sampler["inputs"]["negative"]
-        pos_node = graph.get(str(pos_ref[0])) or {}
-        neg_node = graph.get(str(neg_ref[0])) or {}
-        positive = (pos_node.get("inputs") or {}).get("text")
-        negative = (neg_node.get("inputs") or {}).get("text")
-    except (StopIteration, KeyError, IndexError, TypeError):
-        pass
+
+    # Strategy 1: a sampler with resolvable positive/negative node references.
+    samplers = [n for n in graph.values()
+                if "KSampler" in str(n.get("class_type", ""))
+                and isinstance(n.get("inputs"), dict)
+                and "positive" in n["inputs"] and "negative" in n["inputs"]]
+    for sampler in samplers:
+        if positive is None:
+            positive = _api_text(graph, (sampler["inputs"].get("positive") or [None])[0])
+        if negative is None:
+            negative = _api_text(graph, (sampler["inputs"].get("negative") or [None])[0])
+
+    # Strategy 2 (covers e.g. rgthree "Anything Everywhere" wiring, where the
+    # sampler carries no prompt references): the first two text-encoding nodes
+    # in node-id order.
+    if positive is None or negative is None:
+        encoders = [node for _, node in sorted(graph.items(), key=_node_id_sort)
+                    if "CLIPTextEncode" in str(node.get("class_type", ""))]
+        texts = [(node.get("inputs") or {}).get("text") for node in encoders]
+        texts = [t for t in texts if isinstance(t, str) and len(t) > 1]
+        if positive is None and texts:
+            positive = texts[0]
+        if negative is None and len(texts) > 1:
+            negative = texts[1]
     return {"node_count": len(graph), "models": models,
             "positive_prompt": positive, "negative_prompt": negative}
+
+
+def _api_text(graph, ref):
+    try:
+        node = graph.get(str(ref[0])) or {}
+        return (node.get("inputs") or {}).get("text")
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _node_id_sort(item):
+    node_id = str(item[0])
+    return (0, int(node_id), "") if node_id.isdigit() else (1, 0, node_id)
 
 
 def summarize(graph: dict) -> dict:
@@ -226,8 +267,7 @@ def extract(path: Path, include_prompt: bool = True) -> dict:
         with PILImage.open(path) as im:
             text = getattr(im, "text", {}) or {}
             workflow = _parse_json_object(text.get(WORKFLOW_CHUNK))
-            if include_prompt:
-                prompt = _parse_json_object(text.get(PROMPT_CHUNK))
+            prompt = _parse_json_object(text.get(PROMPT_CHUNK))
             user_comment = _clean_user_comment(
                 im.getexif().get(EXIF_USER_COMMENT) if im.getexif() else None
             )
@@ -245,10 +285,20 @@ def extract(path: Path, include_prompt: bool = True) -> dict:
             "(not saved by ComfyUI, or stripped)"
         )
 
+    summary = summarize(workflow)
+    if prompt is not None:
+        # The API chunk is the flattened, executed graph — the most reliable
+        # source when the UI graph hides prompt wiring (e.g. rgthree
+        # "Anything Everywhere" nodes). Fill only what the UI summary missed.
+        api_summary = summarize(prompt)
+        for key in ("positive_prompt", "negative_prompt"):
+            if summary[key] is None:
+                summary[key] = api_summary[key]
+
     result = {
         "has_workflow": True,
         "file": str(path),
-        **summarize(workflow),
+        **summary,
         "workflow": workflow,
     }
     if include_prompt:

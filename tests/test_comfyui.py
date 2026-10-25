@@ -91,3 +91,47 @@ def test_jpeg_user_comment_fallback(gthumb_home):
     assert data["has_workflow"] is True
     assert data["node_count"] == 5
     assert data["models"] == ["dreamshaper.safetensors"]
+
+
+UE_UI_GRAPH = {
+    "nodes": [
+        # rgthree "Anything Everywhere": sampler has no positive/negative
+        # inputs, prompts are wired implicitly at execution time.
+        {"id": 37, "type": "KSamplerSelect", "widgets_values": ["euler"]},
+        {"id": 5, "type": "CLIPTextEncode", "widgets_values": ["(score_9, score_8_up), 1girl, selfie"]},
+        {"id": 6, "type": "CLIPTextEncode", "widgets_values": ["score_6, watermark"]},
+    ],
+    "links": [],
+}
+
+UE_API_PROMPT = {
+    "5": {"class_type": "CLIPTextEncode", "inputs": {"text": "(score_9, score_8_up), 1girl, selfie"}},
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "score_6, watermark"}},
+    "37": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+}
+
+
+def test_ue_wired_ui_graph_falls_back_to_text_nodes(gthumb_home):
+    img = make_comfyui_png(gthumb_home["data"] / "img" / "ue.png", UE_UI_GRAPH, UE_API_PROMPT)
+    data = comfyui.extract(img)
+    assert data["has_workflow"] is True
+    assert data["positive_prompt"] == "(score_9, score_8_up), 1girl, selfie"
+    assert data["negative_prompt"] == "score_6, watermark"
+
+
+def test_api_summary_falls_back_to_text_nodes(gthumb_home):
+    data = comfyui.summarize(UE_API_PROMPT)
+    assert data["positive_prompt"] == "(score_9, score_8_up), 1girl, selfie"
+    assert data["negative_prompt"] == "score_6, watermark"
+
+
+def test_extract_fills_missing_prompts_from_api_chunk(gthumb_home):
+    """UI summary misses prompts; the API chunk must fill them (bug report case)."""
+    img = make_comfyui_png(gthumb_home["data"] / "img" / "ue2.png", UE_UI_GRAPH, UE_API_PROMPT)
+    ui_only = comfyui.summarize(UE_UI_GRAPH)
+    assert ui_only["positive_prompt"] == "(score_9, score_8_up), 1girl, selfie"
+
+    data = comfyui.extract(img, include_prompt=False)
+    assert data["positive_prompt"] == "(score_9, score_8_up), 1girl, selfie"
+    assert data["negative_prompt"] == "score_6, watermark"
+    assert "prompt" not in data
