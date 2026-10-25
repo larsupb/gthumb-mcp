@@ -32,11 +32,12 @@ def gthumb_home(tmp_path, monkeypatch) -> dict[str, Path]:
 
 
 def make_image(path: Path, size: tuple[int, int] = (64, 48), color=(200, 10, 10)) -> Path:
-    """Create a minimal PNG image for tests."""
+    """Create a minimal image file; format follows the extension."""
     from PIL import Image as PILImage
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    PILImage.new("RGB", size, color).save(path, format="PNG")
+    fmt = "JPEG" if path.suffix.lower() in (".jpg", ".jpeg") else "PNG"
+    PILImage.new("RGB", size, color).save(path, format=fmt)
     return path
 
 

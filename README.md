@@ -84,7 +84,7 @@ Claude Desktop (`claude_desktop_config.json`):
 |---|---|
 | `list_tags()` | All tags known to gThumb |
 | `create_tag(tag)` / `delete_tag(tag)` / `rename_tag(old, new)` | Manage tag definitions |
-| `find_images_by_tag(tag, directory?)` | From the cached snapshot, or a live XMP scan of a directory |
+| `find_images_by_tags(tags, match, directory?)` | Multi-tag search: `match="AND"` (all tags) or `match="OR"` (any tag); snapshot-based by default, or a live XMP scan of a directory. OR results include which tags matched |
 
 **Image metadata** (embedded XMP, same fields gThumb writes)
 
@@ -102,12 +102,40 @@ Claude Desktop (`claude_desktop_config.json`):
 | `find_images(directory, name_pattern?, tag?, min_rating?, newer_than?, older_than?, limit)` | Filter by filename glob, tag, rating and modification date |
 | `get_thumbnail(path, size)` | From the shared thumbnail cache (`normal` 128 px / `large` 512 px), generated if missing |
 | `get_image(path, max_size)` | Image content, downscaled, for model viewing |
+| `get_comfyui_workflow(path, include_prompt?)` | ComfyUI workflow embedded in an image, with a summary (see below) |
 
 **Convenience**
 
 | Tool | Description |
 |---|---|
 | `open_in_gthumb(path)` | Open a file or directory in the gThumb desktop app |
+
+## ComfyUI workflow delivery
+
+Images saved by ComfyUI embed their generation graph as PNG text chunks
+(`workflow`: the UI graph, and `prompt`: the API-format graph). The
+`get_comfyui_workflow` tool returns both as parsed JSON plus a best-effort
+summary, so an agent can understand — and even recreate — how an image was
+generated:
+
+```json
+{
+  "has_workflow": true,
+  "node_count": 14,
+  "models": ["SD1.5/Characters/character-lora-v50.safetensors",
+             "SD1.5/Improve/add_detail.safetensors"],
+  "positive_prompt": "a photo of a …",
+  "negative_prompt": "watermark",
+  "workflow": { "…": "full UI graph, drag-and-droppable back into ComfyUI" },
+  "prompt": { "…": "API-format graph (with include_prompt=true)" }
+}
+```
+
+`get_image_info` includes a `has_comfyui_workflow` flag for cheap availability
+checks. JPEGs saved by ComfyUI (workflow embedded in the EXIF UserComment)
+are supported as a fallback. Prompt extraction is best-effort — third-party
+node collections wire samplers differently, and the complete graph JSON is
+always delivered regardless.
 
 ## Example session
 
@@ -177,11 +205,12 @@ Project layout:
 
 ```
 src/gthumb_mcp/
-├── server.py        # FastMCP-style server: 19 tools, stdio transport
+├── server.py        # FastMCP-style server: 20 tools, stdio transport
 ├── paths.py         # gThumb data locations (env-overridable)
 ├── catalogs.py      # .catalog / .search XML parsing and atomic writing
 ├── tags.py          # tags.xml and per-tag search snapshots
 ├── metadata.py      # exiftool wrapper for embedded XMP
+├── comfyui.py       # embedded ComfyUI workflow extraction
 ├── thumbnails.py    # freedesktop thumbnail cache
 └── util.py          # file:// URI conversion, atomic writes
 ```

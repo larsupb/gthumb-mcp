@@ -11,7 +11,8 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import catalogs, metadata, tags, thumbnails
+from . import catalogs, comfyui, metadata, thumbnails
+from . import tags as tags_module
 
 mcp = MCPServer("gthumb")
 
@@ -84,49 +85,91 @@ def remove_from_catalog(name: str, paths: list[str]) -> str:
 @mcp.tool()
 def list_tags() -> str:
     """List all tags known to gThumb (from ~/.config/gthumb/tags.xml)."""
-    return _ok({"tags": tags.list_tags()})
+    return _ok({"tags": tags_module.list_tags()})
 
 
 @mcp.tool()
 def create_tag(tag: str) -> str:
     """Create a new tag in gThumb."""
-    tags.create_tag(tag)
+    tags_module.create_tag(tag)
     return _ok({"created": tag})
 
 
 @mcp.tool()
 def delete_tag(tag: str) -> str:
     """Delete a tag definition (does not rewrite images; use set_tags to untag files)."""
-    tags.delete_tag(tag)
+    tags_module.delete_tag(tag)
     return _ok({"deleted": tag})
 
 
 @mcp.tool()
 def rename_tag(old: str, new: str) -> str:
     """Rename a tag in gThumb's tag list (and its cached search snapshot)."""
-    tags.rename_tag(old, new)
+    tags_module.rename_tag(old, new)
     return _ok({"renamed": old, "to": new})
 
 
 @mcp.tool()
-def find_images_by_tag(tag: str, directory: str | None = None) -> str:
-    """Find images with a gThumb tag. Reads the cached snapshot by default;
-    pass `directory` to instead scan embedded XMP metadata live under that directory."""
+def find_images_by_tags(tags: list[str], match: str = "AND", directory: str | None = None) -> str:
+    """Find images by multiple gThumb tags. match='AND': images having ALL tags;
+    match='OR': images having AT LEAST ONE tag. Reads gThumb's cached tag snapshots
+    by default; pass `directory` to instead scan embedded XMP metadata live."""
+    match = (match or "AND").upper()
+    if match not in ("AND", "OR"):
+        raise ValueError("match must be 'AND' or 'OR'")
+    wanted = [t.strip() for t in tags if t.strip()]
+    if not wanted:
+        raise ValueError("tags must not be empty")
+
     if directory is not None:
         base = _existing_dir(directory)
         candidates = metadata.iter_image_files(base)
+        wanted_set = set(wanted)
         matches = []
         for info, path in _metadata_with_paths(candidates):
-            if tag in (info.get("tags") or []):
-                matches.append(str(path))
-        return _ok({"tag": tag, "source": "embedded-xmp", "count": len(matches), "files": matches})
+            if path is None:
+                continue
+            present = wanted_set & set(info.get("tags") or [])
+            ok = len(present) == len(wanted) if match == "AND" else len(present) > 0
+            if ok:
+                entry = {"path": str(path)}
+                if match == "OR":
+                    entry["matched_tags"] = sorted(present)
+                matches.append(entry)
+        return _ok({"tags": wanted, "match": match, "source": "embedded-xmp",
+                    "count": len(matches), "files": matches})
 
-    snapshot = tags.read_tag_snapshot(tag)
-    if snapshot is None:
-        return _ok({"tag": tag, "source": "snapshot", "count": 0,
-                    "files": [], "note": "No cached snapshot; pass directory to scan embedded XMP."})
-    return _ok({"tag": tag, "source": "snapshot", "count": len(snapshot),
-                "files": [str(p) for p in snapshot]})
+    # Snapshot mode: combine gThumb's per-tag cached search results.
+    sets: dict[str, set[str]] = {}
+    missing: list[str] = []
+    for tag in wanted:
+        snapshot = tags_module.read_tag_snapshot(tag)
+        if snapshot is None:
+            missing.append(tag)
+        else:
+            sets[tag] = {str(p) for p in snapshot}
+    if missing:
+        if match == "AND" or not sets:
+            raise ValueError(
+                "No gThumb tag snapshot for tag(s): " + ", ".join(missing)
+                + ". Pass a `directory` to scan embedded XMP metadata live instead."
+            )
+
+    if match == "AND":
+        files = sorted(set.intersection(*sets.values()))
+    else:
+        files = sorted(set.union(*sets.values())) if sets else []
+
+    result = {"tags": wanted, "match": match, "source": "snapshot",
+              "count": len(files), "files": files}
+    if match == "OR":
+        result["matched_tags"] = {
+            f: sorted(t for t, s in sets.items() if f in s) for f in files
+        }
+    if missing:
+        result["note"] = ("No snapshot for tag(s): " + ", ".join(missing)
+                          + " — they contributed nothing to this OR query")
+    return _ok(result)
 
 
 # ---------------------------------------------------------------- metadata
@@ -137,6 +180,7 @@ def get_image_info(path: str) -> str:
     p = _existing_file(path)
     info = metadata.get_image_info(p)
     info["path"] = str(p)
+    info["has_comfyui_workflow"] = comfyui.has_workflow(p)
     return _ok(info)
 
 
@@ -166,6 +210,15 @@ def set_comment(path: str, title: str | None = None, description: str | None = N
 
 
 # ---------------------------------------------------------------- search & view
+
+@mcp.tool()
+def get_comfyui_workflow(path: str, include_prompt: bool = True) -> str:
+    """Get the ComfyUI workflow embedded in an image (PNG text chunks), if any:
+    the full UI graph, plus a summary (node count, models, positive/negative prompts).
+    Set include_prompt=true to also return the API-format 'prompt' graph."""
+    p = _existing_file(path)
+    return _ok(comfyui.extract(p, include_prompt=include_prompt))
+
 
 def _metadata_with_paths(paths: list[Path], chunk: int = 400):
     for start in range(0, len(paths), chunk):

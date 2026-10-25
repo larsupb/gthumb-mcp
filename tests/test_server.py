@@ -10,9 +10,10 @@ from gthumb_mcp import server
 EXPECTED_TOOLS = {
     "list_catalogs", "get_catalog", "create_catalog", "delete_catalog",
     "add_to_catalog", "remove_from_catalog",
-    "list_tags", "create_tag", "delete_tag", "rename_tag", "find_images_by_tag",
+    "list_tags", "create_tag", "delete_tag", "rename_tag", "find_images_by_tags",
     "get_image_info", "set_rating", "set_tags", "set_comment",
-    "find_images", "get_thumbnail", "get_image", "open_in_gthumb",
+    "find_images", "get_thumbnail", "get_image",
+    "get_comfyui_workflow", "open_in_gthumb",
 }
 
 
