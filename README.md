@@ -11,6 +11,7 @@ It works directly with gThumb's own data — no database, no duplication:
 | Tag definitions | `~/.config/gthumb/tags.xml` | read + write |
 | Per-tag search snapshots | `~/.local/share/gthumb/catalogs/Tags/*.search` | read |
 | Ratings, tags, title, comment | embedded XMP inside the image files | read + write via `exiftool` |
+| Tags (comment sidecars) | `<folder>/.comments/<image>.xml` | read + write |
 | Thumbnails | `~/.cache/thumbnails` (freedesktop spec) | read + write |
 
 gThumb picks up everything this server writes on its next refresh — and vice versa.
@@ -92,7 +93,7 @@ Claude Desktop (`claude_desktop_config.json`):
 |---|---|
 | `get_image_info(path)` | Dimensions, format, camera, date, GPS, title, description, tags, rating |
 | `set_rating(path, 0..5)` | Star rating |
-| `set_tags(path, tags, replace)` | Set (`replace=true`) or append (`replace=false`) tags |
+| `set_tags(path, tags, replace)` | Set (`replace=true`) or append (`replace=false`) tags — written to the comment sidecar *and* embedded XMP |
 | `set_comment(path, title?, description?, location?)` | Only non-`None` fields are changed |
 
 **Search & view**
@@ -163,17 +164,21 @@ JSON is always delivered regardless.
 
 - **Catalogs** are parsed and rewritten as XML in exactly gThumb's format. All writes
   are atomic (temp file + `os.replace`), so a crash can't corrupt gThumb's files.
-- **Tags on images** are read/written as embedded XMP via exiftool, matching what
-  gThumb 3.12 stores in its default *store metadata in files* mode:
+- **Tags on images** are read/written as embedded XMP via exiftool *and* as
+  gThumb comment sidecars (`<folder>/.comments/<image>.xml`). Which store the
+  gThumb UI uses depends on the build: exiv2-linked builds read embedded XMP,
+  while Debian's gThumb 3.12 package has no exiv2 linkage and uses sidecars
+  exclusively (regardless of the store-metadata-in-files setting) — so both
+  are kept in sync:
 
-  | gThumb field | XMP field |
-  |---|---|
-  | Title | `XMP-dc:Title` |
-  | Description / comment | `XMP-dc:Description` |
-  | Tags | `XMP-dc:Subject` (list) |
-  | Rating | `XMP-xmp:Rating` (integer 0–5) |
-  | Location | `XMP-iptcCore:Location` |
+  | gThumb field | XMP field | Sidecar element |
+  |---|---|---|
+  | Title | `XMP-dc:Title` | `<caption>` |
+  | Description / comment | `XMP-dc:Description` | `<note>` |
+  | Tags | `XMP-dc:Subject` (list) | `<categories><category value=…/>` |
+  | Rating | `XMP-xmp:Rating` (integer 0–5) | — (XMP only) |
 
+  Tag searches and `get_image_info` read both stores and merge results.
   Note the exiftool list semantics used here: plain `=` assignments *replace* the
   whole tag list, `+=` appends, and an empty list with `replace=true` clears it.
 - **Thumbnails** follow the [freedesktop thumbnailer spec](https://specifications.freedesktop.org/thumbnail-spec/latest/):
@@ -213,6 +218,7 @@ src/gthumb_mcp/
 ├── catalogs.py      # .catalog / .search XML parsing and atomic writing
 ├── tags.py          # tags.xml and per-tag search snapshots
 ├── metadata.py      # exiftool wrapper for embedded XMP
+├── sidecars.py      # .comments comment sidecars (UI-visible tags)
 ├── comfyui.py       # embedded ComfyUI workflow extraction
 ├── thumbnails.py    # freedesktop thumbnail cache
 └── util.py          # file:// URI conversion, atomic writes

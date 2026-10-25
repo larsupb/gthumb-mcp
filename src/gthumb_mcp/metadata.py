@@ -122,6 +122,14 @@ def get_image_info(path: Path) -> dict:
     return _one(read_metadata(path))
 
 
+def get_tags(path: Path) -> list[str]:
+    """Currently embedded XMP tags (XMP-dc:Subject) of an image."""
+    raw = read_metadata(path).get("Subject")
+    if raw is None:
+        return []
+    return [raw] if isinstance(raw, str) else [str(t) for t in raw]
+
+
 def set_rating(path: Path, rating: int) -> int:
     rating = max(RATING_MIN, min(RATING_MAX, int(rating)))
     _run(["-overwrite_original", f"-XMP:Rating={rating}", str(path)])

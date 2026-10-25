@@ -11,7 +11,7 @@ from pathlib import Path
 
 from mcp.server.mcpserver import Image, MCPServer
 
-from . import catalogs, comfyui, metadata, thumbnails
+from . import catalogs, comfyui, metadata, sidecars, thumbnails
 from . import tags as tags_module
 
 mcp = MCPServer("gthumb")
@@ -129,7 +129,7 @@ def find_images_by_tags(tags: list[str], match: str = "AND", directory: str | No
         for info, path in _metadata_with_paths(candidates):
             if path is None:
                 continue
-            present = wanted_set & set(info.get("tags") or [])
+            present = wanted_set & _all_tags_for(path, info)
             ok = len(present) == len(wanted) if match == "AND" else len(present) > 0
             if ok:
                 entry = {"path": str(path)}
@@ -179,6 +179,9 @@ def get_image_info(path: str) -> str:
     """Get image details: dimensions, format, camera, date, GPS, and gThumb metadata (title, description, tags, rating)."""
     p = _existing_file(path)
     info = metadata.get_image_info(p)
+    # Merge sidecar categories: depending on the gThumb build, tags live in
+    # embedded XMP, .comments sidecars, or both.
+    info["tags"] = list(dict.fromkeys(list(info.get("tags") or []) + sidecars.read_categories(p)))
     info["path"] = str(p)
     info["has_comfyui_workflow"] = comfyui.has_workflow(p)
     return _ok(info)
@@ -194,10 +197,27 @@ def set_rating(path: str, rating: int) -> str:
 
 @mcp.tool()
 def set_tags(path: str, tags: list[str], replace: bool = True) -> str:
-    """Set the gThumb tags of an image (embedded XMP). Set replace=false to append instead. This modifies the file."""
+    """Set the gThumb tags of an image. Set replace=false to append instead.
+    Writes both the gThumb comment sidecar (.comments/<name>.xml — what the
+    gThumb UI reads) and embedded XMP (exiftool). This modifies the files."""
     p = _existing_file(path)
-    applied = metadata.set_tags(p, tags, replace=replace)
-    return _ok({"path": str(p), "tags": applied, "replaced": replace})
+    requested = [str(t).strip() for t in tags if str(t).strip()]
+
+    if replace:
+        final = list(dict.fromkeys(requested))
+    else:
+        # Append: union of what the sidecar and the embedded XMP already have.
+        existing = list(dict.fromkeys(
+            sidecars.read_categories(p) + metadata.get_tags(p)
+        ))
+        final = list(dict.fromkeys(existing + requested))
+
+    sidecars.write_sidecar_tags(p, final, replace=True)
+    metadata.set_tags(p, final, replace=True)
+    for tag in final:
+        tags_module.create_tag(tag)  # register new tags in tags.xml
+    return _ok({"path": str(p), "tags": final, "replaced": replace,
+                "sidecar": str(sidecars.sidecar_path(p))})
 
 
 @mcp.tool()
@@ -210,6 +230,17 @@ def set_comment(path: str, title: str | None = None, description: str | None = N
 
 
 # ---------------------------------------------------------------- search & view
+
+def _all_tags_for(path: Path, info: dict | None = None) -> set[str]:
+    """Union of embedded XMP tags and gThumb comment-sidecar categories.
+
+    Depending on the gThumb build, tags live in embedded XMP (exiv2-linked
+    builds) or in .comments sidecar XMLs (Debian builds) — read both.
+    """
+    tags = set((info or {}).get("tags") or [])
+    tags.update(sidecars.read_categories(path))
+    return tags
+
 
 @mcp.tool()
 def get_comfyui_workflow(path: str, include_prompt: bool = True) -> str:
@@ -254,12 +285,13 @@ def find_images(directory: str, name_pattern: str | None = None, tag: str | None
         for info, path in _metadata_with_paths(candidates):
             if path is None:
                 continue
+            file_tags = _all_tags_for(path, info)
             if min_rating is not None and (info.get("rating") or 0) < min_rating:
                 continue
-            if tag and tag not in (info.get("tags") or []):
+            if tag and tag not in file_tags:
                 continue
             matches.append({"path": str(path), "rating": info.get("rating"),
-                            "tags": info.get("tags"), "date_taken": info.get("date_taken")})
+                            "tags": sorted(file_tags), "date_taken": info.get("date_taken")})
             if len(matches) >= limit:
                 break
         return _ok({"directory": str(base), "count": len(matches), "images": matches})
