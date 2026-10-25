@@ -38,6 +38,10 @@ READ_ARGS = [
     "-XMP-dc:Description",
     "-XMP-dc:Subject",
     "-XMP-iptcCore:Location",
+    # Alternate keyword stores some tools write; merged into the tag list so
+    # ghost tags can't hide from searches and audits.
+    "-IPTC:Keywords",
+    "-Iptc4xmpCore:Keywords",
 ]
 
 IMAGE_EXTENSIONS = {
@@ -93,10 +97,19 @@ def _one(raw: dict) -> dict:
         except (TypeError, ValueError):
             return None
 
+    # All embedded keyword stores, merged (deduplicated, order-preserving):
+    # XMP dc:Subject, XMP Iptc4xmpCore:Keywords (read-only ghost store some
+    # tools leave behind) and the IPTC IIM Keywords block.
+    tags: list[str] = []
+    for key in ("Subject", "Iptc4xmpCore:Keywords", "Keywords"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        for tag in value if isinstance(value, list) else [value]:
+            if tag and tag not in tags:
+                tags.append(tag)
+
     rating = num("Rating")
-    tags = raw.get("Subject") or []
-    if isinstance(tags, str):
-        tags = [tags]
     return {
         "width": num("ImageWidth"),
         "height": num("ImageHeight"),
@@ -123,34 +136,54 @@ def get_image_info(path: Path) -> dict:
 
 
 def get_tags(path: Path) -> list[str]:
-    """Currently embedded XMP tags (XMP-dc:Subject) of an image."""
-    raw = read_metadata(path).get("Subject")
-    if raw is None:
-        return []
-    return [raw] if isinstance(raw, str) else [str(t) for t in raw]
+    """All embedded keywords of an image: XMP dc:Subject, XMP
+    Iptc4xmpCore:Keywords and the IPTC IIM Keywords block, merged."""
+    return _one(read_metadata(path))["tags"]
+
+
+def replace_keywords(
+    path: Path, tags: list[str], restore: dict | None = None, write_iptc: bool = True
+) -> list[str]:
+    """Replace ALL embedded keyword stores with `tags`: XMP dc:Subject, XMP
+    Iptc4xmpCore:Keywords (a read-only ghost store some tools leave behind —
+    the only way to clear it is wiping the whole XMP) and the IPTC IIM
+    Keywords block.
+
+    `restore` (gThumb sidecar state from sidecars.read_sidecar) re-applies the
+    non-keyword XMP fields this server manages after the wipe: rating, title,
+    description, location. ComfyUI PNG tEXt chunks (workflow/prompt) are plain
+    text chunks and are NOT touched by -xmp:all= / -iptc:all=.
+    """
+    # Wipe every keyword representation first (also removes ghost stores).
+    _run(["-overwrite_original", "-xmp:all=", "-iptc:all=", str(path)])
+
+    args = ["-overwrite_original"]
+    if restore:
+        if restore.get("rating"):
+            args.append(f"-XMP:Rating={restore['rating']}")
+        if restore.get("caption"):
+            args.append(f"-XMP-dc:Title={restore['caption']}")
+        if restore.get("note"):
+            args.append(f"-XMP-dc:Description={restore['note']}")
+        if restore.get("place"):
+            args.append(f"-XMP-iptcCore:Location={restore['place']}")
+    for tag in tags:
+        # '+=' after the wipe: starts from an empty list, so this accumulates
+        # exactly `tags` (a plain '=' after a group clear behaves
+        # unpredictably, and '-=' combined with '=' in one command is worse).
+        args.append(f"-XMP-dc:Subject+={tag}")
+    if write_iptc:
+        for tag in tags:
+            args.append(f"-IPTC:Keywords+={tag}")
+    if len(args) > 1:  # nothing to re-write for empty tag lists
+        _run([*args, str(path)])
+    return tags
 
 
 def set_rating(path: Path, rating: int) -> int:
     rating = max(RATING_MIN, min(RATING_MAX, int(rating)))
     _run(["-overwrite_original", f"-XMP:Rating={rating}", str(path)])
     return rating
-
-
-def set_tags(path: Path, tags: list[str], replace: bool = True) -> list[str]:
-    tags = [str(t).strip() for t in tags if str(t).strip()]
-    if not tags:
-        if replace:  # empty list + replace -> clear the tag list entirely
-            _run(["-overwrite_original", "-XMP-dc:Subject-=", str(path)])
-        return []
-    if replace:
-        # Plain '=' assignments REPLACE the stored list; multiple '=' args
-        # accumulate into the new list. Do NOT combine with '-=' in the same
-        # command: that turns the subsequent '=' into an append instead.
-        args = ["-overwrite_original"] + [f"-XMP-dc:Subject={t}" for t in tags]
-    else:
-        args = ["-overwrite_original"] + [f"-XMP-dc:Subject+={t}" for t in tags]
-    _run([*args, str(path)])
-    return tags
 
 
 def set_comment(path: Path, title: str | None = None, description: str | None = None,

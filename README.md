@@ -93,7 +93,7 @@ Claude Desktop (`claude_desktop_config.json`):
 |---|---|
 | `get_image_info(path)` | Dimensions, format, camera, date, GPS, title, description, tags, rating |
 | `set_rating(path, 0..5)` | Star rating — embedded XMP + comment sidecar |
-| `set_tags(path, tags, replace)` | Set (`replace=true`) or append (`replace=false`) tags — written to the comment sidecar *and* embedded XMP |
+| `set_tags(path, tags, replace)` | Set (`replace=true`) or append (`replace=false`) tags — replace mode clears *all* embedded keyword stores (XMP dc:Subject, Iptc4xmpCore:Keywords, IPTC:Keywords) before writing, so no ghost tags survive; written to the comment sidecar *and* embedded metadata |
 | `set_comment(path, title?, description?, location?)` | Title/comment/location — written to both the comment sidecar and embedded XMP; only non-`None` fields change |
 
 **Search & view**
@@ -181,6 +181,17 @@ JSON is always delivered regardless.
   Tag searches and `get_image_info` read both stores and merge results.
   Note the exiftool list semantics used here: plain `=` assignments *replace* the
   whole tag list, `+=` appends, and an empty list with `replace=true` clears it.
+- **Legacy keyword stores are cleared, not just dc:subject.** Files tagged by
+  other tools often carry keywords in additional embedded stores — the IPTC IIM
+  `Keywords` block and the XMP `Iptc4xmpCore:Keywords` property (read-only in
+  exiftool, so a plain tag rewrite can never remove it). `set_tags` with
+  `replace=true` therefore wipes every keyword representation with
+  `-xmp:all= -iptc:all=` first and rebuilds from scratch (re-applying rating,
+  title, description and location afterwards; PNG text chunks such as embedded
+  ComfyUI workflows are unaffected). Append mode unions all existing stores
+  and only creates an IPTC block where one already existed. `get_image_info`
+  and tag searches merge all embedded keyword stores, so stale ghosts can
+  neither hide nor leak into results.
 - **Thumbnails** follow the [freedesktop thumbnailer spec](https://specifications.freedesktop.org/thumbnail-spec/latest/):
   the cache key is the MD5 of the image's `file://` URI, and generated thumbnails carry
   the spec's `Thumb::URI` / `Thumb::MTime` annotations. gThumb shares this cache, so

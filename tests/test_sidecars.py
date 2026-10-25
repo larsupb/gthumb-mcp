@@ -190,6 +190,21 @@ def test_live_scan_includes_sidecar_only_tags(gthumb_home):
 
 
 @pytest.mark.skipif(not EXIFTOOL, reason="exiftool not installed")
+def test_set_tags_replace_clears_iptc_ghosts(gthumb_home):
+    img = make_image(gthumb_home["data"] / "img" / "k.png")
+    # Legacy store: a tool wrote "Whirlpool" only to the IPTC IIM block.
+    metadata._run(["-overwrite_original", "-IPTC:Keywords=Whirlpool", str(img)])
+    assert "Whirlpool" in metadata.get_tags(img)
+
+    res = json.loads(server.set_tags(str(img), ["Selfie"], replace=True))
+
+    assert res["tags"] == ["Selfie"]
+    # ALL embedded keyword stores now hold exactly the new tags — no ghosts.
+    assert metadata.get_tags(img) == ["Selfie"]
+    assert sidecars.read_categories(img) == ["Selfie"]
+
+
+@pytest.mark.skipif(not EXIFTOOL, reason="exiftool not installed")
 def test_set_tags_writes_both_stores_consistently(gthumb_home):
     img = make_image(gthumb_home["data"] / "img" / "j.png")
     server.set_tags(str(img), ["One"], replace=True)

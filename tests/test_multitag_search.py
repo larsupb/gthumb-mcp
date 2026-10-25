@@ -69,8 +69,8 @@ def test_live_scan_and(gthumb_home, tagged):
     # Tag the files themselves (embedded XMP): a gets both, b only Beach.
     from gthumb_mcp import metadata
 
-    metadata.set_tags(a, ["Beach", "Family"], replace=True)
-    metadata.set_tags(b, ["Beach"], replace=True)
+    metadata.replace_keywords(a, ["Beach", "Family"])
+    metadata.replace_keywords(b, ["Beach"])
     res = server.find_images_by_tags(
         tags=["Beach", "Family"], match="AND", directory=str(gthumb_home["data"])
     )

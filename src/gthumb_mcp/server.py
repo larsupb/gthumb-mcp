@@ -212,21 +212,38 @@ def set_rating(path: str, rating: int) -> str:
 def set_tags(path: str, tags: list[str], replace: bool = True) -> str:
     """Set the gThumb tags of an image. Set replace=false to append instead.
     Writes both the gThumb comment sidecar (.comments/<name>.xml — what the
-    gThumb UI reads) and embedded XMP (exiftool). This modifies the files."""
+    gThumb UI reads) and embedded metadata (exiftool). Replace mode clears
+    ALL embedded keyword stores (XMP dc:Subject, Iptc4xmpCore:Keywords and
+    IPTC:Keywords) before writing, so no ghost tags survive. This modifies
+    the files."""
     p = _existing_file(path)
     requested = [str(t).strip() for t in tags if str(t).strip()]
+    sidecar_state = sidecars.read_sidecar(p)
 
     if replace:
         final = list(dict.fromkeys(requested))
+        write_iptc = True
+    elif not requested:
+        # Append with nothing to add: pure no-op.
+        return _ok({"path": str(p),
+                    "tags": list(dict.fromkeys(
+                        sidecars.read_categories(p) + metadata.get_tags(p))),
+                    "replaced": False,
+                    "sidecar": str(sidecars.sidecar_path(p))})
     else:
-        # Append: union of what the sidecar and the embedded XMP already have.
+        # Append: union of what all stores already have.
+        existing_embedded = metadata.read_metadata(p)
+        write_iptc = "Keywords" in existing_embedded
         existing = list(dict.fromkeys(
             sidecars.read_categories(p) + metadata.get_tags(p)
         ))
         final = list(dict.fromkeys(existing + requested))
 
     sidecars.write_sidecar_tags(p, final, replace=True)
-    metadata.set_tags(p, final, replace=True)
+    # restore= re-applies rating/title/description/location that the XMP
+    # wipe removes; write_iptc only creates an IPTC block where one existed.
+    metadata.replace_keywords(p, final, restore=sidecar_state,
+                              write_iptc=write_iptc)
     for tag in final:
         tags_module.create_tag(tag)  # register new tags in tags.xml
     return _ok({"path": str(p), "tags": final, "replaced": replace,
